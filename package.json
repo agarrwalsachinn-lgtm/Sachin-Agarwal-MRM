@@ -4,6 +4,7 @@
   "description": "",
   "main": "server.js",
   "scripts": {
+    "postinstall": "npm rebuild --build-from-source",
     "start": "node server.js",
     "test": "node -e \"console.log('No automated tests configured yet.')\""
   },

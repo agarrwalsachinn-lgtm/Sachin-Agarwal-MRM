@@ -1,5 +1,5 @@
 const departments = {
-  admin: { label: "Administrator", modules: ["dashboard", "dailyReview", "editLog", "production", "inventory", "inventoryMovement", "inventoryPurchases", "stores", "storesPurchases", "stockMovement", "purchases", "purchaseOrders", "sales", "salesOrders", "brokerage", "accounting", "employees"] },
+  admin: { label: "Administrator", modules: ["dashboard", "dailyReview", "editLog", "userManagement", "production", "inventory", "inventoryMovement", "inventoryPurchases", "stores", "storesPurchases", "stockMovement", "purchases", "purchaseOrders", "sales", "salesOrders", "brokerage", "accounting", "employees"] },
   production: { label: "Production", modules: ["dashboard", "production", "inventory", "inventoryMovement"] },
   inventory: { label: "Inventory", modules: ["dashboard", "inventory", "inventoryPurchases", "inventoryMovement"] },
   stores: { label: "Stores", modules: ["dashboard", "stores", "storesPurchases", "stockMovement"] },
@@ -9,23 +9,13 @@ const departments = {
   hr: { label: "Human Resources", modules: ["dashboard", "employees"] }
 };
 
-const demoAccounts = [
-  { email: "admin@agrimill.local", password: "Admin@123", departmentId: "admin", name: "Mill Administrator" },
-  { email: "production@agrimill.local", password: "Prod@123", departmentId: "production", name: "Production User" },
-  { email: "inventory@agrimill.local", password: "Stock@123", departmentId: "inventory", name: "Inventory User" },
-  { email: "stores@agrimill.local", password: "Stores@123", departmentId: "stores", name: "Stores User" },
-  { email: "purchase@agrimill.local", password: "Buy@123", departmentId: "purchase", name: "Purchase User" },
-  { email: "sales@agrimill.local", password: "Sales@123", departmentId: "sales", name: "Sales User" },
-  { email: "accounts@agrimill.local", password: "Ledger@123", departmentId: "accounts", name: "Accounts User" },
-  { email: "hr@agrimill.local", password: "People@123", departmentId: "hr", name: "HR User" }
-];
-
 const paddyTypeOptions = ["Hybrid Paddy", "Mix Paddy", "Mota Paddy", "Mansoori Paddy"];
 
 const moduleInfo = {
   dashboard: { label: "Dashboard", icon: "⌂", description: "An overview of your mill's operations today." },
   dailyReview: { label: "Daily data review", icon: "▦", description: "Review, print, and edit records entered by every department for a selected date." },
   editLog: { label: "Edited log", icon: "◷", description: "Review the administrator, time, and field-by-field details of every recorded edit.", columns: ["Date and time", "Administrator", "Email", "Department", "Section", "Record ID", "Changes"] },
+  userManagement: { label: "User management", icon: "♙", description: "Create department accounts, send invitations, reset passwords, and manage access." },
   production: { label: "Production", icon: "⚙", description: "Manage dryer intake batches and milling conversion into Rice and by-products.", columns: ["Batch Number", "Date", "Dryer No.", "Mill", "Product", "Paddy input", "Rice output", "Yield", "Status"], fields: [], initial: [["PRD-2026-001", "31 Oct 2026", "D1 (INDUSS 32MT)", "Mill 1 (OLD)", "Grade A Raw Rice", "12,500 kg", "8,125 kg", "65.0%", "Completed"], ["PRD-2026-002", "31 Oct 2026", "D2 (DULICHAND 32MT)", "Mill 2 (NEW MILL)", "Grade A Raw Rice", "10,000 kg", "6,420 kg", "64.2%", "Processing"], ["PRD-2026-003", "31 Oct 2026", "D3 (SKF 40MT)", "Mill 2 (NEW MILL)", "Broken Rice", "8,200 kg", "5,300 kg", "64.6%", "Completed"]] },
   dryerBatches: { label: "Dryer batches", icon: "♨", description: "Track Paddy intake, bag count, weighment and dryer details.", columns: ["Dryer batch", "Date", "Dryer", "Paddy type", "Purchase RST", "Bags", "Average kg / bag", "Paddy input (kg)", "Moisture before (%)", "Moisture after (%)", "Remaining for milling (kg)", "Status"], fields: [], initial: [] },
   millingRuns: { label: "Milling runs", icon: "⚙", description: "Convert dryer Paddy into Rice and measured by-products.", columns: ["Milling run", "Date", "Dryer batch", "Paddy type", "Mill", "Paddy input (kg)", "Rice (kg)", "Broken Rice (kg)", "Rejection Rice (kg)", "Nakku (kg)", "Bran (kg)", "Silky Bran (kg)", "Husk (kg)", "Total output (kg)", "Recovery (%)", "Variance (kg)", "Status"], fields: [], initial: [] },
@@ -48,6 +38,7 @@ const icons = { production: "⚙", inventory: "▤", stores: "▤", purchases: "
 let currentUser = null;
 let currentModule = "dashboard";
 let toastTimer;
+let authFlow = { mode: "login", stage: "request", email: "", error: "" };
 let inventoryFilters = { search: "", category: "", status: "", warehouse: "", vendor: "", movementType: "", fromDate: "", toDate: "" };
 let moduleFilters = {};
 let dailyReviewFilters = { date: "", departmentId: "all" };
@@ -58,16 +49,12 @@ const storesProductCategories = ["Packaging", "Spare parts", "Consumables"];
 (function installBackendStorage() {
   const cache = new Map();
 
-  const syncFromServer = async () => {
-    try {
-      const response = await fetch("/api/storage");
-      if (!response.ok) return;
-      const payload = await response.json();
-      cache.clear();
-      Object.entries(payload || {}).forEach(([key, value]) => cache.set(String(key), String(value)));
-    } catch (error) {
-      console.warn("Could not sync local storage with backend.", error);
-    }
+  window.syncBackendStorage = async () => {
+    const response = await fetch("/api/storage", { credentials: "same-origin" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not load account data.");
+    cache.clear();
+    Object.entries(payload || {}).forEach(([key, value]) => cache.set(String(key), String(value)));
   };
 
   const localStorageAdapter = {
@@ -85,9 +72,12 @@ const storesProductCategories = ["Packaging", "Spare parts", "Consumables"];
       if (typeof fetch === "function") {
         fetch("/api/storage", {
           method: "POST",
+          credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ key: actualKey, value: actualValue })
-        }).catch(() => {});
+        }).then(response => {
+          if (!response.ok) console.error("Could not save application data.", response.status);
+        }).catch(error => console.error("Could not save application data.", error));
       }
       return actualValue;
     },
@@ -98,15 +88,21 @@ const storesProductCategories = ["Packaging", "Spare parts", "Consumables"];
       if (typeof fetch === "function") {
         fetch("/api/storage", {
           method: "DELETE",
+          credentials: "same-origin",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ key: actualKey })
-        }).catch(() => {});
+        }).then(response => {
+          if (!response.ok) console.error("Could not remove application data.", response.status);
+        }).catch(error => console.error("Could not remove application data.", error));
       }
     },
     clear() {
       cache.clear();
       if (typeof fetch === "function") {
-        fetch("/api/storage", { method: "DELETE" }).catch(() => {});
+        fetch("/api/storage", { method: "DELETE", credentials: "same-origin" })
+          .then(response => {
+            if (!response.ok) console.error("Could not clear application data.", response.status);
+          }).catch(error => console.error("Could not clear application data.", error));
       }
     },
     key(index) {
@@ -119,9 +115,24 @@ const storesProductCategories = ["Packaging", "Spare parts", "Consumables"];
     configurable: true,
     writable: true
   });
+  window.clearBackendStorageCache = () => cache.clear();
 
-  syncFromServer();
 })();
+
+async function apiRequest(url, { method = "GET", body } = {}) {
+  if (window.location.protocol === "file:") {
+    throw new Error("Open the app using your Render service URL (or run npm start and open http://localhost:3000). Opening index.html directly cannot reach the sign-in server.");
+  }
+  const response = await fetch(url, {
+    method,
+    credentials: "same-origin",
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `Request failed (${response.status}).`);
+  return payload;
+}
 
 function readStorage(key, fallback) {
   try {
@@ -233,6 +244,7 @@ function getPaddyPurchases() {
 }
 
 function migrateLegacyPaddyPurchases() {
+  if (!["admin", "inventory"].includes(currentUser.departmentId)) return true;
   const rawPurchases = readStorage("agrimill-purchases", moduleInfo.purchases.initial);
   const migratedSlips = readStorage("agrimill-paddy-purchase-migrations", []);
   const migrationKeys = Array.isArray(migratedSlips) ? migratedSlips : [];
@@ -480,6 +492,56 @@ function statusClass(value) {
 }
 
 function renderLogin() {
+  const heading = {
+    login: ["Sign in", "Use the user ID assigned by your administrator."],
+    bootstrap: ["Create administrator account", "Verify the master Gmail account and choose a permanent password."],
+    invite: ["Activate your account", "Use the invitation code sent to your work email and set a permanent password."],
+    reset: ["Reset your password", "Verify your email address and choose a new permanent password."]
+  }[authFlow.mode];
+  const input = (id, label, type, placeholder, autocomplete, value = "") =>
+    `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="${type}" placeholder="${placeholder}" autocomplete="${autocomplete}" value="${escapeHtml(value)}" required></div>`;
+  let form;
+  if (authFlow.mode === "login") {
+    form = `<form class="login-card" id="login-form">
+      ${input("login-user-id", "User ID", "text", "Master: sachinn.agarrwal@gmail.com · Staff: assigned ID", "username")}
+      ${input("login-password", "Password", "password", "Enter your password", "current-password")}
+      <div class="login-error" id="login-error" role="alert">${escapeHtml(authFlow.error)}</div>
+      <button class="primary-btn login-submit" type="submit">Sign in to your mill <span aria-hidden="true">→</span></button>
+      <div class="auth-links"><button type="button" class="text-action" data-auth-mode="reset">Forgot password?</button><button type="button" class="text-action" data-auth-mode="invite">Activate invited account</button></div>
+      ${authFlow.initialized ? "" : `<div class="auth-note"><strong>First time here?</strong><br>Set up the master administrator account to get started.<button type="button" class="text-action" data-auth-mode="bootstrap">Set up administrator</button></div>`}
+    </form>`;
+  } else if (authFlow.mode === "bootstrap") {
+    form = `<form class="login-card" id="bootstrap-form">
+      <div class="auth-note"><strong>Master account</strong><br>sachinn.agarrwal@gmail.com</div>
+      ${authFlow.stage === "request"
+        ? `<p class="login-intro">A one-time code will be sent to the master Gmail account. You must be able to access that inbox.</p>`
+        : `${input("auth-code", "Gmail verification code", "text", "6-digit code", "one-time-code")}${input("auth-password", "Permanent password", "password", "At least 12 characters", "new-password")}${input("auth-confirm-password", "Confirm password", "password", "Re-enter your password", "new-password")}`}
+      <div class="login-error" id="login-error" role="alert">${escapeHtml(authFlow.error)}</div>
+      <button class="primary-btn login-submit" type="submit">${authFlow.stage === "request" ? "Send Gmail verification code" : "Create administrator account"}</button>
+      <div class="auth-links"><button type="button" class="text-action" data-auth-mode="login">Back to sign in</button></div>
+    </form>`;
+  } else if (authFlow.mode === "invite") {
+    form = `<form class="login-card" id="invite-form">
+      ${input("auth-email", "Work email", "email", "The email used for your invitation", "email", authFlow.email)}
+      ${input("auth-code", "Invitation code", "text", "6-digit code", "one-time-code")}
+      ${input("auth-password", "Permanent password", "password", "At least 12 characters", "new-password")}
+      ${input("auth-confirm-password", "Confirm password", "password", "Re-enter your password", "new-password")}
+      <div class="login-error" id="login-error" role="alert">${escapeHtml(authFlow.error)}</div>
+      <button class="primary-btn login-submit" type="submit">Verify email and activate</button>
+      <div class="auth-links"><button type="button" class="text-action" data-auth-mode="login">Back to sign in</button><button type="button" class="text-action" data-auth-mode="reset">Reset password</button></div>
+    </form>`;
+  } else {
+    form = `<form class="login-card" id="reset-form">
+      ${input("auth-email", "Account email", "email", "Enter the email on your account", "email", authFlow.email)}
+      ${authFlow.stage === "complete"
+        ? `${input("auth-code", "Email verification code", "text", "6-digit code", "one-time-code")}${input("auth-password", "New permanent password", "password", "At least 12 characters", "new-password")}${input("auth-confirm-password", "Confirm password", "password", "Re-enter your password", "new-password")}`
+        : ""}
+      <div class="login-error" id="login-error" role="alert">${escapeHtml(authFlow.error)}</div>
+      <button class="primary-btn login-submit" type="submit">${authFlow.stage === "request" ? "Send reset code" : "Save new password"}</button>
+      <div class="auth-links"><button type="button" class="text-action" data-auth-mode="login">Back to sign in</button><button type="button" class="text-action" data-auth-mode="invite">Activate invited account</button></div>
+    </form>`;
+  }
+
   document.getElementById("app").innerHTML = `
     <main class="login-shell">
       <section class="login-art">
@@ -489,34 +551,126 @@ function renderLogin() {
         <div class="login-foot">A simpler way to run your rice mill.</div>
       </section>
       <section class="login-panel">
-        <form class="login-card" id="login-form">
-          <div class="eyebrow" style="color:#56805d">Welcome to RiceMill ERP Solutions</div><h2>Sign in</h2><p class="login-intro">Access your mill's operations workspace.</p>
-          <div class="field"><label for="email">Work email</label><input id="email" type="email" placeholder="you@yourmill.com" autocomplete="username" required></div>
-          <div class="field"><label for="password">Password</label><input id="password" type="password" placeholder="Enter your password" autocomplete="current-password" required></div>
-          <div class="login-error" id="login-error" role="alert"></div>
-          <button class="primary-btn login-submit" type="submit">Sign in to your mill <span aria-hidden="true">→</span></button>
-          <details class="demo-note demo-accounts"><summary><strong>Demo logins</strong> · Show account credentials</summary><p>Use one account for each department:</p><ul>${demoAccounts.map(account => `<li><strong>${escapeHtml(departments[account.departmentId].label)}:</strong> <code>${escapeHtml(account.email)}</code> / <code>${escapeHtml(account.password)}</code></li>`).join("")}</ul><p>Demo accounts are for local testing only. Data and sign-in state stay in this browser; this is not production-secure authentication.</p></details>
-        </form>
+        <div class="login-card">
+          <div class="eyebrow" style="color:#56805d">Welcome to RiceMill ERP Solutions</div><h2>${heading[0]}</h2><p class="login-intro">${heading[1]}</p>
+          ${form}
+        </div>
       </section>
     </main>`;
-  document.getElementById("login-form").addEventListener("submit", event => {
-    event.preventDefault();
-    const email = document.getElementById("email").value.trim();
-    const password = document.getElementById("password").value;
-    const account = demoAccounts.find(candidate => candidate.email === email.toLowerCase() && candidate.password === password);
-    if (!account) {
-      document.getElementById("login-error").textContent = "Email or password is incorrect. Choose a demo account below and try again.";
-      return;
-    }
-    currentUser = {
-      accountId: account.email,
-      email: account.email,
-      departmentId: account.departmentId,
-      name: account.name,
-      role: departments[account.departmentId].label
+
+  document.querySelectorAll("[data-auth-mode]").forEach(button => button.addEventListener("click", () => {
+    authFlow = {
+      mode: button.dataset.authMode,
+      stage: "request",
+      email: button.dataset.authMode === "bootstrap" ? "sachinn.agarrwal@gmail.com" : "",
+      error: "",
+      initialized: authFlow.initialized
     };
-    if (!saveStorage("agrimill-user", currentUser)) return;
-    renderApp();
+    renderLogin();
+  }));
+
+  const showError = error => {
+    authFlow.error = error.message || "The request could not be completed.";
+    renderLogin();
+  };
+  const readPassword = () => {
+    const password = document.getElementById("auth-password").value;
+    if (password !== document.getElementById("auth-confirm-password").value) {
+      throw new Error("The passwords do not match.");
+    }
+    return password;
+  };
+  const enterApplication = async user => {
+    currentUser = user;
+    try {
+      await window.syncBackendStorage();
+      currentModule = "dashboard";
+      authFlow.error = "";
+      renderApp();
+    } catch (error) {
+      currentUser = null;
+      showError(error);
+    }
+  };
+
+  document.getElementById("login-form")?.addEventListener("submit", async event => {
+    event.preventDefault();
+    try {
+      const { user } = await apiRequest("/api/auth/login", {
+        method: "POST",
+        body: {
+          userId: document.getElementById("login-user-id").value.trim(),
+          password: document.getElementById("login-password").value
+        }
+      });
+      await enterApplication(user);
+    } catch (error) {
+      showError(error);
+    }
+  });
+
+  document.getElementById("bootstrap-form")?.addEventListener("submit", async event => {
+    event.preventDefault();
+    try {
+      if (authFlow.stage === "request") {
+        const result = await apiRequest("/api/auth/bootstrap/request-otp", { method: "POST", body: {} });
+        authFlow.stage = "complete";
+        authFlow.error = result.message;
+        renderLogin();
+        return;
+      }
+      const password = readPassword();
+      const { user } = await apiRequest("/api/auth/bootstrap/complete", {
+        method: "POST",
+        body: { code: document.getElementById("auth-code").value.trim(), password }
+      });
+      await enterApplication(user);
+    } catch (error) {
+      showError(error);
+    }
+  });
+
+  document.getElementById("invite-form")?.addEventListener("submit", async event => {
+    event.preventDefault();
+    try {
+      const password = readPassword();
+      await apiRequest("/api/auth/invite/complete", {
+        method: "POST",
+        body: {
+          email: document.getElementById("auth-email").value.trim(),
+          code: document.getElementById("auth-code").value.trim(),
+          password
+        }
+      });
+      authFlow = { ...authFlow, mode: "login", stage: "request", error: "Account activated. Sign in with your assigned user ID and new password." };
+      renderLogin();
+    } catch (error) {
+      showError(error);
+    }
+  });
+
+  document.getElementById("reset-form")?.addEventListener("submit", async event => {
+    event.preventDefault();
+    const email = document.getElementById("auth-email").value.trim();
+    try {
+      if (authFlow.stage === "request") {
+        const result = await apiRequest("/api/auth/password/request-otp", { method: "POST", body: { email } });
+        authFlow.stage = "complete";
+        authFlow.email = email;
+        authFlow.error = result.message;
+        renderLogin();
+        return;
+      }
+      const password = readPassword();
+      const result = await apiRequest("/api/auth/password/complete", {
+        method: "POST",
+        body: { email, code: document.getElementById("auth-code").value.trim(), password }
+      });
+      authFlow = { ...authFlow, mode: "login", stage: "request", error: result.message };
+      renderLogin();
+    } catch (error) {
+      showError(error);
+    }
   });
 }
 
@@ -524,7 +678,7 @@ function renderSidebar() {
   const nav = departments[currentUser.departmentId].modules;
   const groups = [
     { label: "Overview", modules: ["dashboard"] },
-    { label: "Administration", modules: ["dailyReview", "editLog"] },
+    { label: "Administration", modules: ["dailyReview", "editLog", "userManagement"] },
     { label: "Mill operations · inventory", modules: ["production", "inventory", "inventoryPurchases", "inventoryMovement"] },
     { label: "Stores · maintenance", modules: ["stores", "storesPurchases", "stockMovement"] },
     { label: "Commercial", modules: ["purchases", "purchaseOrders", "sales", "salesOrders", "brokerage"] },
@@ -543,7 +697,7 @@ function renderTopbar() {
 }
 
 function getOperationalModules() {
-  return departments[currentUser.departmentId].modules.filter(id => !["dashboard", "dailyReview", "editLog"].includes(id));
+  return departments[currentUser.departmentId].modules.filter(id => !["dashboard", "dailyReview", "editLog", "userManagement"].includes(id));
 }
 
 function getDashboardMetrics() {
@@ -1179,6 +1333,7 @@ function getRecordReportSources(moduleId, record, availableSources = null) {
 }
 
 function renderModule(moduleId) {
+  if (moduleId === "userManagement") return renderUserManagementPage();
   if (moduleId === "dailyReview") return renderDailyReviewPage();
   if (moduleId === "editLog") return renderEditLogPage();
   if (moduleId === "production") return renderProductionPage();
@@ -1205,6 +1360,103 @@ function filterModuleRecords(moduleId) {
       && (!filter.status || String(record[record.length - 1]) === filter.status));
 }
 
+function renderUserManagementPage() {
+  const departmentOptions = Object.entries(departments)
+    .filter(([id]) => id !== "admin")
+    .map(([id, department]) => `<option value="${id}">${escapeHtml(department.label)}</option>`)
+    .join("");
+  return `<div class="page-heading"><div><div class="eyebrow module-eyebrow">ADMINISTRATION</div><h1>User management</h1><p>Create verified user accounts and control access to department workspaces.</p></div></div>
+    <section class="panel user-management-panel">
+      <div class="module-table-heading"><div><h2>Invite a department user</h2><p>An OTP will be emailed to the user to verify their address and set a permanent password.</p></div></div>
+      <form class="user-invite-form" id="user-invite-form">
+        <div class="field"><label for="invite-user-id">User ID</label><input id="invite-user-id" name="userId" required minlength="3" maxlength="48" pattern="[A-Za-z0-9._-]+" autocomplete="off"></div>
+        <div class="field"><label for="invite-name">Full name</label><input id="invite-name" name="name" required maxlength="100" autocomplete="name"></div>
+        <div class="field"><label for="invite-email">Work email</label><input id="invite-email" name="email" type="email" required maxlength="254" autocomplete="email"></div>
+        <div class="field"><label for="invite-department">Department</label><select id="invite-department" name="departmentId" required>${departmentOptions}</select></div>
+        <div class="user-invite-actions"><div class="form-error" id="user-management-error" role="alert"></div><button class="primary-btn" type="submit">Send invitation</button></div>
+      </form>
+    </section>
+    <section class="panel user-list-panel">
+      <div class="module-table-heading"><div><h2>Department accounts</h2><p>Reset passwords, deactivate access, or remove accounts.</p></div></div>
+      <div id="admin-users-table" class="table-wrap">Loading accounts…</div>
+    </section>`;
+}
+
+function renderAdminUsers(users) {
+  if (!users.length) return `<div class="empty-state">No department accounts yet. Send the first invitation above.</div>`;
+  return `<table><thead><tr><th>User ID</th><th>Name</th><th>Email</th><th>Department</th><th>Status</th><th>Account controls</th></tr></thead><tbody>${users.map(user => {
+    const status = user.isActive ? "Active" : user.emailVerified ? "Deactivated" : "Invitation pending";
+    return `<tr><td>${escapeHtml(user.userId)}</td><td>${escapeHtml(user.name)}</td><td>${escapeHtml(user.email)}</td><td>${escapeHtml(user.role)}</td><td>${status}</td><td class="user-actions">
+      ${user.isActive
+        ? `<button class="text-action" type="button" data-user-action="reset" data-user-id="${escapeHtml(user.userId)}">Reset password</button><button class="text-action" type="button" data-user-action="toggle" data-active="false" data-user-id="${escapeHtml(user.userId)}">Deactivate</button>`
+        : user.emailVerified
+          ? `<button class="text-action" type="button" data-user-action="toggle" data-active="true" data-user-id="${escapeHtml(user.userId)}">Reactivate</button>`
+          : `<button class="text-action" type="button" data-user-action="invite" data-user-id="${escapeHtml(user.userId)}">Resend invitation</button>`}
+      <button class="text-action danger-action" type="button" data-user-action="delete" data-user-id="${escapeHtml(user.userId)}">Delete</button>
+    </td></tr>`;
+  }).join("")}</tbody></table>`;
+}
+
+function wireUserManagementActions() {
+  const table = document.getElementById("admin-users-table");
+  const loadUsers = async () => {
+    try {
+      const { users } = await apiRequest("/api/admin/users");
+      table.innerHTML = renderAdminUsers(users);
+    } catch (error) {
+      table.textContent = error.message || "Could not load department accounts.";
+    }
+  };
+  loadUsers();
+
+  document.getElementById("user-invite-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const submitButton = form.querySelector('button[type="submit"]');
+    const message = document.getElementById("user-management-error");
+    submitButton.disabled = true;
+    message.textContent = "";
+    try {
+      const payload = Object.fromEntries(new FormData(form));
+      const result = await apiRequest("/api/admin/users", { method: "POST", body: payload });
+      form.reset();
+      showToast(result.message);
+      await loadUsers();
+    } catch (error) {
+      message.textContent = error.message || "Could not send the invitation.";
+    } finally {
+      submitButton.disabled = false;
+    }
+  });
+
+  table.addEventListener("click", async event => {
+    const button = event.target.closest("[data-user-action]");
+    if (!button) return;
+    const userId = button.dataset.userId;
+    const action = button.dataset.userAction;
+    try {
+      if (action === "delete") {
+        if (!window.confirm(`Permanently remove the account ${userId}?`)) return;
+        await apiRequest(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE", body: {} });
+      } else if (action === "toggle") {
+        await apiRequest(`/api/admin/users/${encodeURIComponent(userId)}/status`, {
+          method: "PATCH",
+          body: { active: button.dataset.active === "true" }
+        });
+      } else if (action === "invite") {
+        const result = await apiRequest(`/api/admin/users/${encodeURIComponent(userId)}/resend-invite`, { method: "POST", body: {} });
+        showToast(result.message);
+      } else if (action === "reset") {
+        const result = await apiRequest(`/api/admin/users/${encodeURIComponent(userId)}/reset-otp`, { method: "POST", body: {} });
+        showToast(result.message);
+      }
+      await loadUsers();
+    } catch (error) {
+      showToast(error.message || "Could not update the account.");
+    }
+  });
+}
+
 function renderApp() {
   document.getElementById("app").innerHTML = `<div class="app-shell">${renderSidebar()}<main class="main-area">${renderTopbar()}<div class="content" id="content">${currentModule === "dashboard" ? renderDashboard() : renderModule(currentModule)}</div></main></div>`;
   document.querySelectorAll("[data-module]").forEach(button => button.addEventListener("click", () => {
@@ -1212,14 +1464,22 @@ function renderApp() {
     document.getElementById("sidebar").classList.remove("open");
     renderApp();
   }));
-  document.getElementById("logout").addEventListener("click", () => {
-    localStorage.removeItem("agrimill-user");
-    currentUser = null;
-    currentModule = "dashboard";
-    renderLogin();
+  document.getElementById("logout").addEventListener("click", async () => {
+    try {
+      await apiRequest("/api/auth/logout", { method: "POST", body: {} });
+      window.clearBackendStorageCache();
+      currentUser = null;
+      currentModule = "dashboard";
+      authFlow = { mode: "login", stage: "request", email: "", error: "", initialized: true };
+      renderLogin();
+    } catch (error) {
+      showToast(error.message || "Sign out failed.");
+    }
   });
   document.getElementById("mobile-menu").addEventListener("click", () => document.getElementById("sidebar").classList.toggle("open"));
-  if (currentModule === "dashboard") {
+  if (currentModule === "userManagement") {
+    wireUserManagementActions();
+  } else if (currentModule === "dashboard") {
     const getDashboardSources = () => getOperationalModules()
       .flatMap(id => id === "production"
         ? ["production", "dryerBatches", "millingRuns"].map(moduleId => ({ moduleId, records: getRecords(moduleId) }))
@@ -2336,12 +2596,28 @@ function showToast(message) {
   toastTimer = setTimeout(() => toast.remove(), 3000);
 }
 
-const savedUser = readStorage("agrimill-user", null);
-const savedAccount = savedUser && demoAccounts.find(account => account.email === savedUser.accountId && account.departmentId === savedUser.departmentId);
-if (savedAccount) {
-  currentUser = savedUser;
-  renderApp();
-} else {
-  localStorage.removeItem("agrimill-user");
-  renderLogin();
+async function startApplication() {
+  if (window.location.protocol === "file:") {
+    authFlow.initialized = false;
+    authFlow.error = "Open the deployed Render service URL to sign in. Do not open index.html directly.";
+    renderLogin();
+    return;
+  }
+  try {
+    const session = await apiRequest("/api/auth/session");
+    authFlow.initialized = session.initialized;
+    if (session.user) {
+      currentUser = session.user;
+      await window.syncBackendStorage();
+      renderApp();
+      return;
+    }
+    renderLogin();
+  } catch (error) {
+    authFlow.initialized = true;
+    authFlow.error = error.message || "Could not connect to the server.";
+    renderLogin();
+  }
 }
+
+startApplication();

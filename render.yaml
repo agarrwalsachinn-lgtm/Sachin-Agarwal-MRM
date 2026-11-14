@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: agrimill-erp
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: agrimill-erp-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_PATH
+        value: /var/data/data.sqlite
+      - key: GMAIL_USER
+        value: sachinn.agarrwal@gmail.com
+      - key: GMAIL_APP_PASSWORD
+        sync: false

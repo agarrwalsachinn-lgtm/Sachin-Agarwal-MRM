@@ -4,16 +4,19 @@
   "description": "",
   "main": "server.js",
   "scripts": {
-    "postinstall": "npm rebuild --build-from-source",
     "start": "node server.js",
-    "test": "node -e \"console.log('No automated tests configured yet.')\""
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=22 <23"
+  },
   "dependencies": {
     "express": "^5.3.0",
+    "nodemailer": "^10.5.0",
     "sqlite3": "^6.0.1"
   }
 }

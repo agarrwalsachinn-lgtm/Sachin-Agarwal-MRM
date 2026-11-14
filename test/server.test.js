@@ -12,6 +12,7 @@ const sqlite3 = require("sqlite3").verbose();
 const repoRoot = path.resolve(__dirname, "..");
 const passwordSalt = "00112233445566778899aabbccddeeff";
 let testDirectory;
+let databasePath;
 let baseUrl;
 let server;
 
@@ -24,6 +25,12 @@ function run(db, sql, params = []) {
 function close(db) {
   return new Promise((resolve, reject) => {
     db.close(error => error ? reject(error) : resolve());
+  });
+}
+
+function dbGet(db, sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (error, row) => error ? reject(error) : resolve(row));
   });
 }
 
@@ -107,13 +114,13 @@ async function api(url, cookie, options = {}) {
 
 test.before(async () => {
   testDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "agrimill-auth-test-"));
-  const databasePath = path.join(testDirectory, "test.sqlite");
+  databasePath = path.join(testDirectory, "test.sqlite");
   await seedDatabase(databasePath);
   const port = await unusedPort();
   baseUrl = `http://127.0.0.1:${port}`;
   server = spawn(process.execPath, ["server.js"], {
     cwd: repoRoot,
-    env: { ...process.env, DATABASE_PATH: databasePath, PORT: String(port), NODE_ENV: "test" },
+    env: { ...process.env, DATABASE_PATH: databasePath, PORT: String(port), NODE_ENV: "test", ADMIN_INITIAL_PASSWORD: "" },
     stdio: "ignore"
   });
 
@@ -142,6 +149,150 @@ test.after(async () => {
 test("requires a session before exposing stored data", async () => {
   const response = await api("/api/storage");
   assert.equal(response.status, 401);
+});
+
+test("removes email contact data from existing account records during startup", async () => {
+  const db = new sqlite3.Database(databasePath);
+  const row = await dbGet(db, "SELECT email FROM auth_users WHERE user_id = ?", ["inv-001"]);
+  await close(db);
+  assert.equal(row.email, "inv-001@account.invalid");
+});
+
+test("prevents re-running administrator bootstrap after account creation", async () => {
+  const response = await api("/api/auth/bootstrap", null, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ initialPassword: "master-password-123" })
+  });
+  assert.equal(response.status, 409);
+  assert.match((await response.json()).error, /already been created/);
+});
+
+test("bootstraps the master account with the Render-configured password", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agrimill-bootstrap-test-"));
+  const port = await unusedPort();
+  const url = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      DATABASE_PATH: path.join(directory, "bootstrap.sqlite"),
+      PORT: String(port),
+      NODE_ENV: "test",
+      ADMIN_INITIAL_PASSWORD: "Admin@1212"
+    },
+    stdio: "ignore"
+  });
+
+  try {
+    let ready = false;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (child.exitCode !== null) throw new Error(`Bootstrap test server exited with code ${child.exitCode}.`);
+      try {
+        const response = await fetch(`${url}/api/health`);
+        if (response.ok) {
+          ready = true;
+          break;
+        }
+      } catch {}
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    assert.equal(ready, true, "Bootstrap test server did not become ready.");
+
+    const badPassword = await fetch(`${url}/api/auth/bootstrap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initialPassword: "wrong-password-123" })
+    });
+    assert.equal(badPassword.status, 401);
+
+    const setup = await fetch(`${url}/api/auth/bootstrap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initialPassword: "Admin@1212" })
+    });
+    assert.equal(setup.status, 200);
+    const payload = await setup.json();
+    assert.equal(payload.user.accountId, "sachinn.agarrwal@gmail.com");
+    assert.equal(payload.user.mustChangePassword, true);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill();
+      await Promise.race([
+        once(child, "exit"),
+        new Promise(resolve => setTimeout(resolve, 3000))
+      ]);
+    }
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("migrates existing email-authenticated administrator to the configured password", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agrimill-migration-test-"));
+  const legacyDatabase = path.join(directory, "legacy.sqlite");
+  await seedDatabase(legacyDatabase);
+  const db = new sqlite3.Database(legacyDatabase);
+  await run(db, "CREATE TABLE auth_otps (user_id TEXT PRIMARY KEY, code_hash TEXT NOT NULL)");
+  await close(db);
+
+  const port = await unusedPort();
+  const url = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, ["server.js"], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      DATABASE_PATH: legacyDatabase,
+      PORT: String(port),
+      NODE_ENV: "test",
+      ADMIN_INITIAL_PASSWORD: "Admin@1212"
+    },
+    stdio: "ignore"
+  });
+
+  try {
+    let ready = false;
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (child.exitCode !== null) throw new Error(`Migration test server exited with code ${child.exitCode}.`);
+      try {
+        const response = await fetch(`${url}/api/health`);
+        if (response.ok) {
+          ready = true;
+          break;
+        }
+      } catch {}
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    assert.equal(ready, true, "Migration test server did not become ready.");
+
+    const oldPassword = await fetch(`${url}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: "sachinn.agarrwal@gmail.com", password: "master-password-123" })
+    });
+    assert.equal(oldPassword.status, 401);
+
+    const newPassword = await fetch(`${url}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId: "sachinn.agarrwal@gmail.com", password: "Admin@1212" })
+    });
+    assert.equal(newPassword.status, 200);
+    assert.equal((await newPassword.json()).user.mustChangePassword, true);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill();
+      await Promise.race([
+        once(child, "exit"),
+        new Promise(resolve => setTimeout(resolve, 3000))
+      ]);
+    }
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("has no email-based login recovery endpoint", async () => {
+  const response = await api("/api/auth/password/request-otp", null, { method: "POST" });
+  assert.equal(response.status, 404);
 });
 
 test("limits staff storage access to their department", async () => {
@@ -234,9 +385,97 @@ test("only the master administrator can manage department accounts", async () =>
   assert.equal(expiredSession.status, 401);
 });
 
+test("admin provisions and resets passwords without email, requiring user password changes", async () => {
+  const admin = await signIn("sachinn.agarrwal@gmail.com", "master-password-123");
+  const created = await api("/api/admin/users", admin.cookie, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      userId: "new-user-1",
+      name: "New Department User",
+      departmentId: "sales",
+      temporaryPassword: "staff-temporary-password-2026"
+    })
+  });
+  assert.equal(created.status, 201);
+
+  const usersResponse = await api("/api/admin/users", admin.cookie);
+  const { users } = await usersResponse.json();
+  const newUser = users.find(user => user.userId === "new-user-1");
+  assert.equal(newUser.mustChangePassword, true);
+  assert.equal(Object.hasOwn(newUser, "email"), false);
+
+  const newStaff = await signIn("new-user-1", "staff-temporary-password-2026");
+  assert.equal(newStaff.payload.user.mustChangePassword, true);
+  const staffBlocked = await api("/api/storage", newStaff.cookie);
+  assert.equal(staffBlocked.status, 403);
+
+  const reset = await api("/api/admin/users/new-user-1/reset-password", admin.cookie, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ temporaryPassword: "staff-reset-password-2026" })
+  });
+  assert.equal(reset.status, 200);
+  const revoked = await api("/api/storage", newStaff.cookie);
+  assert.equal(revoked.status, 401);
+
+  const resetLogin = await signIn("new-user-1", "staff-reset-password-2026");
+  assert.equal(resetLogin.payload.user.mustChangePassword, true);
+  const change = await api("/api/auth/password/change", resetLogin.cookie, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      currentPassword: "staff-reset-password-2026",
+      newPassword: "staff-permanent-password-2026"
+    })
+  });
+  assert.equal(change.status, 200);
+  const permanentLogin = await signIn("new-user-1", "staff-permanent-password-2026");
+  assert.equal(permanentLogin.payload.user.mustChangePassword, false);
+});
+
 test("serves no demo credentials in the sign-in page", async () => {
   const response = await api("/");
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.doesNotMatch(html, /demo logins/i);
+});
+
+test("requires the master administrator to change the initial password", async () => {
+  const db = new sqlite3.Database(databasePath);
+  await run(db, "UPDATE auth_users SET must_change_password = 1 WHERE is_master = 1");
+  await close(db);
+
+  const { cookie, payload } = await signIn("sachinn.agarrwal@gmail.com", "master-password-123");
+  assert.equal(payload.user.mustChangePassword, true);
+
+  const blocked = await api("/api/admin/users", cookie);
+  assert.equal(blocked.status, 403);
+
+  const badCurrentPassword = await api("/api/auth/password/change", cookie, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ currentPassword: "wrong-password", newPassword: "new-password-test-2026" })
+  });
+  assert.equal(badCurrentPassword.status, 401);
+
+  const changed = await api("/api/auth/password/change", cookie, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ currentPassword: "master-password-123", newPassword: "new-password-test-2026" })
+  });
+  assert.equal(changed.status, 200);
+  assert.equal((await changed.json()).user.mustChangePassword, false);
+
+  const oldLogin = await api("/api/auth/login", null, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ userId: "sachinn.agarrwal@gmail.com", password: "master-password-123" })
+  });
+  assert.equal(oldLogin.status, 401);
+
+  const newLogin = await signIn("sachinn.agarrwal@gmail.com", "new-password-test-2026");
+  assert.equal(newLogin.payload.user.mustChangePassword, false);
+  const allowed = await api("/api/admin/users", newLogin.cookie);
+  assert.equal(allowed.status, 200);
 });

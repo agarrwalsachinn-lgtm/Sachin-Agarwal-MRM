@@ -1,16 +1,14 @@
 const crypto = require("crypto");
 const express = require("express");
-const nodemailer = require("nodemailer");
 const path = require("path");
 const sqlite3 = require("sqlite3").verbose();
 
 const app = express();
 const port = process.env.PORT || 3000;
 const dbPath = process.env.DATABASE_PATH || path.join(__dirname, "data.sqlite");
-const masterEmail = "sachinn.agarrwal@gmail.com";
+const masterUserId = "sachinn.agarrwal@gmail.com";
 const sessionCookie = "agrimill_session";
 const sessionLifetimeMs = 12 * 60 * 60 * 1000;
-const otpLifetimeMs = 10 * 60 * 1000;
 const departmentModules = {
   admin: ["dashboard", "dailyReview", "editLog", "production", "inventory", "inventoryMovement", "inventoryPurchases", "stores", "storesPurchases", "stockMovement", "purchases", "purchaseOrders", "sales", "salesOrders", "brokerage", "accounting", "employees", "userManagement"],
   production: ["dashboard", "production", "inventory", "inventoryMovement"],
@@ -75,10 +73,6 @@ function asyncRoute(handler) {
   return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 }
 
-function normalizeEmail(value) {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
-
 function checkRateLimit(key, limit, windowMs) {
   const now = Date.now();
   const current = requestLimits.get(key);
@@ -95,11 +89,6 @@ function requireRateLimit(key, limit, windowMs) {
   if (!checkRateLimit(key, limit, windowMs)) {
     throw new HttpError(429, "Too many attempts. Please wait before trying again.");
   }
-}
-
-function hashOtp(code, salt) {
-  return crypto.createHmac("sha256", process.env.GMAIL_APP_PASSWORD)
-    .update(`${salt}:${code}`).digest();
 }
 
 function hashPassword(password) {
@@ -130,92 +119,22 @@ function validatePassword(password) {
   }
 }
 
-function getTransport() {
-  const gmailUser = normalizeEmail(process.env.GMAIL_USER);
-  const appPassword = process.env.GMAIL_APP_PASSWORD;
-  if (gmailUser !== masterEmail || !appPassword) {
-    throw new HttpError(503, "Gmail OTP delivery is not configured. Set GMAIL_USER and GMAIL_APP_PASSWORD in Render.");
+function getInitialAdminPassword() {
+  const password = process.env.ADMIN_INITIAL_PASSWORD;
+  if (typeof password !== "string" || password.length < 8 || password.length > 128) {
+    throw new HttpError(503, "Set ADMIN_INITIAL_PASSWORD in Render before creating the administrator account.");
   }
-
-  return nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: { user: gmailUser, pass: appPassword.replace(/\s/g, "") }
-  });
-}
-
-async function sendOtp(email, purpose, req, accountMessage = "") {
-  requireRateLimit(`otp-ip:${req.ip}`, 10, 10 * 60 * 1000);
-  const mailer = getTransport();
-  const now = Date.now();
-  const existing = await get("SELECT sent_at FROM auth_otps WHERE email = ? AND purpose = ?", [email, purpose]);
-  if (existing && now - existing.sent_at < 60 * 1000) {
-    throw new HttpError(429, "A code was sent recently. Please wait one minute before requesting another.");
-  }
-
-  const code = String(crypto.randomInt(100000, 1000000));
-  const salt = crypto.randomBytes(16).toString("hex");
-  await run(
-    `INSERT INTO auth_otps (email, purpose, code_hash, salt, expires_at, attempts, sent_at)
-     VALUES (?, ?, ?, ?, ?, 0, ?)
-     ON CONFLICT(email, purpose) DO UPDATE SET code_hash = excluded.code_hash,
-       salt = excluded.salt, expires_at = excluded.expires_at, attempts = 0, sent_at = excluded.sent_at`,
-    [email, purpose, hashOtp(code, salt).toString("hex"), salt, now + otpLifetimeMs, now]
-  );
-
-  try {
-    await mailer.sendMail({
-      from: normalizeEmail(process.env.GMAIL_USER),
-      to: email,
-      subject: "Your AgriMill ERP verification code",
-      text: `Your AgriMill ERP verification code is ${code}. ${accountMessage} It expires in 10 minutes. If you did not request this code, you can ignore this message.`
-    });
-  } catch (error) {
-    await run("DELETE FROM auth_otps WHERE email = ? AND purpose = ?", [email, purpose]);
-    console.error("Could not send an AgriMill verification email.", error);
-    if (error instanceof HttpError) throw error;
-    throw new HttpError(503, "Could not send the verification email. Check the Gmail settings in Render and try again.");
-  }
-}
-
-async function consumeOtp(email, purpose, code) {
-  const challenge = await get(
-    "SELECT code_hash, salt, expires_at, attempts FROM auth_otps WHERE email = ? AND purpose = ?",
-    [email, purpose]
-  );
-  if (!challenge || challenge.expires_at < Date.now() || challenge.attempts >= 5) {
-    await run("DELETE FROM auth_otps WHERE email = ? AND purpose = ?", [email, purpose]);
-    return false;
-  }
-
-  const candidate = typeof code === "string" && /^\d{6}$/.test(code)
-    ? hashOtp(code, challenge.salt)
-    : Buffer.alloc(32);
-  const expected = Buffer.from(challenge.code_hash, "hex");
-  if (candidate.length !== expected.length || !crypto.timingSafeEqual(candidate, expected)) {
-    await run(
-      "UPDATE auth_otps SET attempts = attempts + 1 WHERE email = ? AND purpose = ? AND attempts < 5",
-      [email, purpose]
-    );
-    return false;
-  }
-
-  const consumed = await run(
-    "DELETE FROM auth_otps WHERE email = ? AND purpose = ? AND code_hash = ? AND expires_at >= ? AND attempts < 5",
-    [email, purpose, challenge.code_hash, Date.now()]
-  );
-  return consumed.changes === 1;
+  return password;
 }
 
 function publicUser(user) {
   return {
     accountId: user.user_id,
-    email: user.email,
     name: user.name,
     departmentId: user.department_id,
     role: departmentLabels[user.department_id],
-    isMaster: Boolean(user.is_master)
+    isMaster: Boolean(user.is_master),
+    mustChangePassword: Boolean(user.must_change_password)
   };
 }
 
@@ -255,7 +174,7 @@ const requireUser = asyncRoute(async (req, res, next) => {
   }
 
   const user = await get(
-    `SELECT u.user_id, u.email, u.name, u.department_id, u.is_master
+    `SELECT u.user_id, u.name, u.department_id, u.is_master, u.must_change_password
      FROM auth_sessions s JOIN auth_users u ON u.user_id = s.user_id
      WHERE s.token_hash = ? AND s.expires_at > ? AND u.is_active = 1`,
     [crypto.createHash("sha256").update(token).digest("hex"), Date.now()]
@@ -266,6 +185,9 @@ const requireUser = asyncRoute(async (req, res, next) => {
   }
 
   req.user = user;
+  if (user.must_change_password && !["/api/auth/password/change", "/api/auth/logout"].includes(req.path)) {
+    throw new HttpError(403, "Change your temporary password from your profile before continuing.");
+  }
   next();
 });
 
@@ -424,17 +346,8 @@ async function initializeDatabase() {
     email_verified INTEGER NOT NULL DEFAULT 0,
     is_active INTEGER NOT NULL DEFAULT 0,
     is_master INTEGER NOT NULL DEFAULT 0,
+    must_change_password INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
-  )`);
-  await run(`CREATE TABLE IF NOT EXISTS auth_otps (
-    email TEXT NOT NULL COLLATE NOCASE,
-    purpose TEXT NOT NULL,
-    code_hash TEXT NOT NULL,
-    salt TEXT NOT NULL,
-    expires_at INTEGER NOT NULL,
-    attempts INTEGER NOT NULL DEFAULT 0,
-    sent_at INTEGER NOT NULL,
-    PRIMARY KEY (email, purpose)
   )`);
   await run(`CREATE TABLE IF NOT EXISTS auth_sessions (
     token_hash TEXT PRIMARY KEY,
@@ -444,6 +357,22 @@ async function initializeDatabase() {
   )`);
   await run("CREATE INDEX IF NOT EXISTS auth_sessions_user_id_idx ON auth_sessions(user_id)");
   await run("CREATE UNIQUE INDEX IF NOT EXISTS auth_users_single_master_idx ON auth_users(is_master) WHERE is_master = 1");
+  const userColumns = await all("PRAGMA table_info(auth_users)");
+  if (!userColumns.some(column => column.name === "must_change_password")) {
+    await run("ALTER TABLE auth_users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0");
+  }
+  const legacyOtpTable = await get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auth_otps'");
+  const existingMaster = legacyOtpTable && await get("SELECT user_id FROM auth_users WHERE is_master = 1");
+  if (existingMaster) {
+    const credentials = await hashPassword(getInitialAdminPassword());
+    await run(
+      "UPDATE auth_users SET password_salt = ?, password_hash = ?, must_change_password = 1 WHERE user_id = ?",
+      [credentials.salt, credentials.hash, existingMaster.user_id]
+    );
+    await run("DELETE FROM auth_sessions WHERE user_id = ?", [existingMaster.user_id]);
+  }
+  await run("UPDATE auth_users SET email = lower(user_id) || '@account.invalid', email_verified = 1");
+  await run("DROP TABLE IF EXISTS auth_otps");
   await run("DELETE FROM storage WHERE key = 'agrimill-user'");
   await run("DELETE FROM auth_sessions WHERE expires_at <= ?", [Date.now()]);
 }
@@ -465,7 +394,7 @@ app.get("/api/auth/session", asyncRoute(async (_req, res) => {
   let user = null;
   if (token && /^[a-f0-9]{64}$/.test(token)) {
     user = await get(
-      `SELECT u.user_id, u.email, u.name, u.department_id, u.is_master
+      `SELECT u.user_id, u.name, u.department_id, u.is_master, u.must_change_password
        FROM auth_sessions s JOIN auth_users u ON u.user_id = s.user_id
        WHERE s.token_hash = ? AND s.expires_at > ? AND u.is_active = 1`,
       [crypto.createHash("sha256").update(token).digest("hex"), Date.now()]
@@ -475,35 +404,30 @@ app.get("/api/auth/session", asyncRoute(async (_req, res) => {
   res.json({ initialized: Boolean(master), user: user ? publicUser(user) : null });
 }));
 
-app.post("/api/auth/bootstrap/request-otp", asyncRoute(async (req, res) => {
+app.post("/api/auth/bootstrap", asyncRoute(async (req, res) => {
   requireRateLimit(`bootstrap-ip:${req.ip}`, 5, 10 * 60 * 1000);
   const master = await get("SELECT 1 FROM auth_users WHERE is_master = 1");
   if (master) throw new HttpError(409, "The administrator account has already been created.");
-  await sendOtp(masterEmail, "bootstrap", req);
-  res.json({ ok: true, message: `A verification code was sent to ${masterEmail}.` });
-}));
-
-app.post("/api/auth/bootstrap/complete", asyncRoute(async (req, res) => {
-  const master = await get("SELECT 1 FROM auth_users WHERE is_master = 1");
-  if (master) throw new HttpError(409, "The administrator account has already been created.");
-  const { code, password } = req.body || {};
-  validatePassword(password);
-  if (!await consumeOtp(masterEmail, "bootstrap", code)) {
-    throw new HttpError(400, "The verification code is invalid or expired.");
+  const initialPassword = getInitialAdminPassword();
+  const submittedPassword = typeof req.body?.initialPassword === "string" ? req.body.initialPassword : "";
+  const expected = Buffer.from(initialPassword);
+  const submitted = Buffer.from(submittedPassword);
+  if (expected.length !== submitted.length || !crypto.timingSafeEqual(expected, submitted)) {
+    throw new HttpError(401, "The initial administrator password is incorrect.");
   }
-  const credentials = await hashPassword(password);
+  const credentials = await hashPassword(initialPassword);
   try {
     await run(
       `INSERT INTO auth_users
-        (user_id, email, name, department_id, password_salt, password_hash, email_verified, is_active, is_master, created_at)
-       VALUES (?, ?, ?, 'admin', ?, ?, 1, 1, 1, ?)`,
-      [masterEmail, masterEmail, "Sachin Agarwal", credentials.salt, credentials.hash, Date.now()]
+        (user_id, email, name, department_id, password_salt, password_hash, email_verified, is_active, is_master, must_change_password, created_at)
+       VALUES (?, ?, ?, 'admin', ?, ?, 1, 1, 1, 1, ?)`,
+      [masterUserId, `${masterUserId}@account.invalid`, "Sachin Agarwal", credentials.salt, credentials.hash, Date.now()]
     );
   } catch (error) {
     if (error.code === "SQLITE_CONSTRAINT") throw new HttpError(409, "The administrator account has already been created.");
     throw error;
   }
-  const user = await get("SELECT user_id, email, name, department_id, is_master FROM auth_users WHERE is_master = 1");
+  const user = await get("SELECT user_id, name, department_id, is_master, must_change_password FROM auth_users WHERE is_master = 1");
   res.json({ ok: true, user: await createSession(res, user) });
 }));
 
@@ -516,13 +440,41 @@ app.post("/api/auth/login", asyncRoute(async (req, res) => {
   requireRateLimit(`login-ip:${req.ip}`, 60, 10 * 60 * 1000);
   requireRateLimit(`login:${req.ip}:${userId.toLowerCase()}`, 10, 10 * 60 * 1000);
   const user = await get(
-    "SELECT user_id, email, name, department_id, password_salt, password_hash, is_master FROM auth_users WHERE user_id = ? AND is_active = 1 AND email_verified = 1",
+    "SELECT user_id, name, department_id, password_salt, password_hash, is_master, must_change_password FROM auth_users WHERE user_id = ? AND is_active = 1",
     [userId]
   );
   if (!user || typeof password !== "string" || !await verifyPassword(password, user.password_salt, user.password_hash)) {
     throw new HttpError(401, "User ID or password is incorrect.");
   }
   res.json({ ok: true, user: await createSession(res, user) });
+}));
+
+app.post("/api/auth/password/change", requireUser, asyncRoute(async (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  validatePassword(newPassword);
+  const user = await get(
+    "SELECT user_id, password_salt, password_hash FROM auth_users WHERE user_id = ? AND is_active = 1",
+    [req.user.user_id]
+  );
+  if (!user || typeof currentPassword !== "string"
+    || !await verifyPassword(currentPassword, user.password_salt, user.password_hash)) {
+    throw new HttpError(401, "Current password is incorrect.");
+  }
+
+  const credentials = await hashPassword(newPassword);
+  await run(
+    "UPDATE auth_users SET password_salt = ?, password_hash = ?, must_change_password = 0 WHERE user_id = ?",
+    [credentials.salt, credentials.hash, user.user_id]
+  );
+  const updatedUser = await get(
+    "SELECT user_id, name, department_id, is_master, must_change_password FROM auth_users WHERE user_id = ?",
+    [user.user_id]
+  );
+  await run("DELETE FROM auth_sessions WHERE user_id = ? AND token_hash != ?", [
+    user.user_id,
+    crypto.createHash("sha256").update(cookieValue(req, sessionCookie)).digest("hex")
+  ]);
+  res.json({ ok: true, user: publicUser(updatedUser) });
 }));
 
 app.post("/api/auth/logout", asyncRoute(async (req, res) => {
@@ -536,124 +488,83 @@ app.post("/api/auth/logout", asyncRoute(async (req, res) => {
   res.json({ ok: true });
 }));
 
-app.post("/api/auth/invite/complete", asyncRoute(async (req, res) => {
-  const email = normalizeEmail(req.body?.email);
-  const { code, password } = req.body || {};
-  validatePassword(password);
-  const user = await get(
-    "SELECT user_id FROM auth_users WHERE email = ? AND is_active = 0 AND is_master = 0",
-    [email]
-  );
-  if (!user || !await consumeOtp(email, "invite", code)) {
-    throw new HttpError(400, "The invitation code is invalid or expired.");
-  }
-  const credentials = await hashPassword(password);
-  await run(
-    "UPDATE auth_users SET password_salt = ?, password_hash = ?, email_verified = 1, is_active = 1 WHERE user_id = ?",
-    [credentials.salt, credentials.hash, user.user_id]
-  );
-  res.json({ ok: true, message: "Account activated. Sign in with your assigned user ID and new password." });
-}));
-
-app.post("/api/auth/password/request-otp", asyncRoute(async (req, res) => {
-  requireRateLimit(`reset-ip:${req.ip}`, 10, 10 * 60 * 1000);
-  const email = normalizeEmail(req.body?.email);
-  if (!email) throw new HttpError(400, "Enter the email address on your account.");
-  const user = await get(
-    "SELECT email FROM auth_users WHERE email = ? AND is_active = 1 AND email_verified = 1",
-    [email]
-  );
-  if (user) await sendOtp(email, "password-reset", req);
-  res.json({ ok: true, message: "If an active account uses that email, a verification code has been sent." });
-}));
-
-app.post("/api/auth/password/complete", asyncRoute(async (req, res) => {
-  const email = normalizeEmail(req.body?.email);
-  const { code, password } = req.body || {};
-  validatePassword(password);
-  const user = await get(
-    "SELECT user_id FROM auth_users WHERE email = ? AND is_active = 1 AND email_verified = 1",
-    [email]
-  );
-  if (!user || !await consumeOtp(email, "password-reset", code)) {
-    throw new HttpError(400, "The verification code is invalid or expired.");
-  }
-  const credentials = await hashPassword(password);
-  await run("UPDATE auth_users SET password_salt = ?, password_hash = ? WHERE user_id = ?", [
-    credentials.salt, credentials.hash, user.user_id
-  ]);
-  await run("DELETE FROM auth_sessions WHERE user_id = ?", [user.user_id]);
-  res.json({ ok: true, message: "Password updated. Sign in with your new password." });
-}));
-
 app.get("/api/admin/users", requireUser, requireAdmin, asyncRoute(async (_req, res) => {
   const users = await all(
-    `SELECT user_id AS userId, email, name, department_id AS departmentId, is_active AS isActive,
-      email_verified AS emailVerified, created_at AS createdAt
+    `SELECT user_id AS userId, name, department_id AS departmentId, is_active AS isActive,
+      must_change_password AS mustChangePassword, created_at AS createdAt
      FROM auth_users WHERE is_master = 0 ORDER BY created_at DESC`
   );
   res.json({ users: users.map(user => ({
     ...user,
     isActive: Boolean(user.isActive),
-    emailVerified: Boolean(user.emailVerified),
+    mustChangePassword: Boolean(user.mustChangePassword),
     role: departmentLabels[user.departmentId]
   })) });
 }));
 
 app.post("/api/admin/users", requireUser, requireAdmin, asyncRoute(async (req, res) => {
   const userId = typeof req.body?.userId === "string" ? req.body.userId.trim() : "";
-  const email = normalizeEmail(req.body?.email);
   const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
   const departmentId = req.body?.departmentId;
+  const temporaryPassword = req.body?.temporaryPassword;
   if (!/^[a-zA-Z0-9._-]{3,48}$/.test(userId)) {
     throw new HttpError(400, "User ID must be 3–48 characters and use letters, numbers, dots, underscores, or hyphens.");
   }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) {
-    throw new HttpError(400, "Enter a valid staff email address.");
-  }
+  validatePassword(temporaryPassword);
   if (!name || name.length > 100) throw new HttpError(400, "Enter a name of up to 100 characters.");
   if (!Object.hasOwn(departmentModules, departmentId) || departmentId === "admin") {
     throw new HttpError(400, "Choose a valid non-administrator department.");
   }
+  const credentials = await hashPassword(temporaryPassword);
+  const existing = await get("SELECT is_active FROM auth_users WHERE user_id = ?", [userId]);
   try {
-    await run(
-      `INSERT INTO auth_users (user_id, email, name, department_id, password_salt, password_hash, created_at)
-       VALUES (?, ?, ?, ?, '', '', ?)`,
-      [userId, email, name, departmentId, Date.now()]
-    );
+    if (existing?.is_active) throw new HttpError(409, "That user ID already belongs to an active account.");
+    if (existing) {
+      await run(
+        `UPDATE auth_users SET email = ?, name = ?, department_id = ?, password_salt = ?, password_hash = ?,
+          email_verified = 1, is_active = 1, must_change_password = 1 WHERE user_id = ?`,
+        [`${userId.toLowerCase()}@account.invalid`, name, departmentId, credentials.salt, credentials.hash, userId]
+      );
+    } else {
+      await run(
+        `INSERT INTO auth_users
+          (user_id, email, name, department_id, password_salt, password_hash, email_verified, is_active, is_master, must_change_password, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, 1, ?)`,
+        [userId, `${userId.toLowerCase()}@account.invalid`, name, departmentId, credentials.salt, credentials.hash, Date.now()]
+      );
+    }
   } catch (error) {
-    if (error.code === "SQLITE_CONSTRAINT") throw new HttpError(409, "That user ID or email is already in use.");
+    if (error instanceof HttpError) throw error;
+    if (error.code === "SQLITE_CONSTRAINT") throw new HttpError(409, "That user ID is already in use.");
     throw error;
   }
-  try {
-    await sendOtp(email, "invite", req, `Your assigned user ID is ${userId}.`);
-  } catch (error) {
-    await run("DELETE FROM auth_users WHERE user_id = ? AND is_active = 0", [userId]);
-    throw error;
-  }
-  res.status(201).json({ ok: true, message: `Invitation sent to ${email}.` });
+  await run("DELETE FROM auth_sessions WHERE user_id = ?", [userId]);
+  res.status(existing ? 200 : 201).json({
+    ok: true,
+    message: `Account ready. Share the temporary password securely with ${userId}; they must change it at first sign-in.`
+  });
 }));
 
-app.post("/api/admin/users/:userId/resend-invite", requireUser, requireAdmin, asyncRoute(async (req, res) => {
-  const user = await get("SELECT user_id, email FROM auth_users WHERE user_id = ? AND is_master = 0 AND is_active = 0", [req.params.userId]);
-  if (!user) throw new HttpError(404, "Pending invitation not found.");
-  await sendOtp(user.email, "invite", req, `Your assigned user ID is ${user.user_id}.`);
-  res.json({ ok: true, message: `A new invitation code was sent to ${user.email}.` });
-}));
-
-app.post("/api/admin/users/:userId/reset-otp", requireUser, requireAdmin, asyncRoute(async (req, res) => {
-  const user = await get("SELECT email FROM auth_users WHERE user_id = ? AND is_master = 0 AND is_active = 1", [req.params.userId]);
-  if (!user) throw new HttpError(404, "Active staff account not found.");
-  await sendOtp(user.email, "password-reset", req);
-  res.json({ ok: true, message: `A password reset code was sent to ${user.email}.` });
+app.post("/api/admin/users/:userId/reset-password", requireUser, requireAdmin, asyncRoute(async (req, res) => {
+  const temporaryPassword = req.body?.temporaryPassword;
+  validatePassword(temporaryPassword);
+  const user = await get("SELECT user_id FROM auth_users WHERE user_id = ? AND is_master = 0", [req.params.userId]);
+  if (!user) throw new HttpError(404, "Staff account not found.");
+  const credentials = await hashPassword(temporaryPassword);
+  await run(
+    `UPDATE auth_users SET password_salt = ?, password_hash = ?, email_verified = 1,
+      is_active = 1, must_change_password = 1 WHERE user_id = ?`,
+    [credentials.salt, credentials.hash, user.user_id]
+  );
+  await run("DELETE FROM auth_sessions WHERE user_id = ?", [user.user_id]);
+  res.json({ ok: true, message: `Temporary password set for ${user.user_id}. Share it securely; they must change it at first sign-in.` });
 }));
 
 app.patch("/api/admin/users/:userId/status", requireUser, requireAdmin, asyncRoute(async (req, res) => {
   const active = req.body?.active;
   if (typeof active !== "boolean") throw new HttpError(400, "An active status is required.");
-  const user = await get("SELECT user_id, email_verified FROM auth_users WHERE user_id = ? AND is_master = 0", [req.params.userId]);
+  const user = await get("SELECT user_id FROM auth_users WHERE user_id = ? AND is_master = 0", [req.params.userId]);
   if (!user) throw new HttpError(404, "Staff account not found.");
-  if (active && !user.email_verified) throw new HttpError(409, "Staff must verify their invitation email before activation.");
   await run("UPDATE auth_users SET is_active = ? WHERE user_id = ?", [active ? 1 : 0, user.user_id]);
   if (!active) await run("DELETE FROM auth_sessions WHERE user_id = ?", [user.user_id]);
   res.json({ ok: true });
@@ -663,7 +574,6 @@ app.delete("/api/admin/users/:userId", requireUser, requireAdmin, asyncRoute(asy
   const user = await get("SELECT user_id FROM auth_users WHERE user_id = ? AND is_master = 0", [req.params.userId]);
   if (!user) throw new HttpError(404, "Staff account not found.");
   await run("DELETE FROM auth_sessions WHERE user_id = ?", [user.user_id]);
-  await run("DELETE FROM auth_otps WHERE email = (SELECT email FROM auth_users WHERE user_id = ?)", [user.user_id]);
   await run("DELETE FROM auth_users WHERE user_id = ?", [user.user_id]);
   res.json({ ok: true });
 }));

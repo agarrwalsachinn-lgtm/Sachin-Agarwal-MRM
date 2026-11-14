@@ -13,9 +13,10 @@ const paddyTypeOptions = ["Hybrid Paddy", "Mix Paddy", "Mota Paddy", "Mansoori P
 
 const moduleInfo = {
   dashboard: { label: "Dashboard", icon: "⌂", description: "An overview of your mill's operations today." },
+  profile: { label: "Profile", icon: "♙", description: "Review your administrator account and manage your sign-in password." },
   dailyReview: { label: "Daily data review", icon: "▦", description: "Review, print, and edit records entered by every department for a selected date." },
-  editLog: { label: "Edited log", icon: "◷", description: "Review the administrator, time, and field-by-field details of every recorded edit.", columns: ["Date and time", "Administrator", "Email", "Department", "Section", "Record ID", "Changes"] },
-  userManagement: { label: "User management", icon: "♙", description: "Create department accounts, send invitations, reset passwords, and manage access." },
+  editLog: { label: "Edited log", icon: "◷", description: "Review the administrator, time, and field-by-field details of every recorded edit.", columns: ["Date and time", "Administrator", "User ID", "Department", "Section", "Record ID", "Changes"] },
+  userManagement: { label: "User management", icon: "♙", description: "Create department accounts, assign temporary passwords, and manage access." },
   production: { label: "Production", icon: "⚙", description: "Manage dryer intake batches and milling conversion into Rice and by-products.", columns: ["Batch Number", "Date", "Dryer No.", "Mill", "Product", "Paddy input", "Rice output", "Yield", "Status"], fields: [], initial: [["PRD-2026-001", "31 Oct 2026", "D1 (INDUSS 32MT)", "Mill 1 (OLD)", "Grade A Raw Rice", "12,500 kg", "8,125 kg", "65.0%", "Completed"], ["PRD-2026-002", "31 Oct 2026", "D2 (DULICHAND 32MT)", "Mill 2 (NEW MILL)", "Grade A Raw Rice", "10,000 kg", "6,420 kg", "64.2%", "Processing"], ["PRD-2026-003", "31 Oct 2026", "D3 (SKF 40MT)", "Mill 2 (NEW MILL)", "Broken Rice", "8,200 kg", "5,300 kg", "64.6%", "Completed"]] },
   dryerBatches: { label: "Dryer batches", icon: "♨", description: "Track Paddy intake, bag count, weighment and dryer details.", columns: ["Dryer batch", "Date", "Dryer", "Paddy type", "Purchase RST", "Bags", "Average kg / bag", "Paddy input (kg)", "Moisture before (%)", "Moisture after (%)", "Remaining for milling (kg)", "Status"], fields: [], initial: [] },
   millingRuns: { label: "Milling runs", icon: "⚙", description: "Convert dryer Paddy into Rice and measured by-products.", columns: ["Milling run", "Date", "Dryer batch", "Paddy type", "Mill", "Paddy input (kg)", "Rice (kg)", "Broken Rice (kg)", "Rejection Rice (kg)", "Nakku (kg)", "Bran (kg)", "Silky Bran (kg)", "Husk (kg)", "Total output (kg)", "Recovery (%)", "Variance (kg)", "Status"], fields: [], initial: [] },
@@ -38,7 +39,7 @@ const icons = { production: "⚙", inventory: "▤", stores: "▤", purchases: "
 let currentUser = null;
 let currentModule = "dashboard";
 let toastTimer;
-let authFlow = { mode: "login", stage: "request", email: "", error: "" };
+let authFlow = { mode: "login", error: "" };
 let inventoryFilters = { search: "", category: "", status: "", warehouse: "", vendor: "", movementType: "", fromDate: "", toDate: "" };
 let moduleFilters = {};
 let dailyReviewFilters = { date: "", departmentId: "all" };
@@ -494,9 +495,7 @@ function statusClass(value) {
 function renderLogin() {
   const heading = {
     login: ["Sign in", "Use the user ID assigned by your administrator."],
-    bootstrap: ["Create administrator account", "Verify the master Gmail account and choose a permanent password."],
-    invite: ["Activate your account", "Use the invitation code sent to your work email and set a permanent password."],
-    reset: ["Reset your password", "Verify your email address and choose a new permanent password."]
+    bootstrap: ["Create administrator account", "Set up the administrator account using the initial password configured on the server."]
   }[authFlow.mode];
   const input = (id, label, type, placeholder, autocomplete, value = "") =>
     `<div class="field"><label for="${id}">${label}</label><input id="${id}" type="${type}" placeholder="${placeholder}" autocomplete="${autocomplete}" value="${escapeHtml(value)}" required></div>`;
@@ -507,38 +506,16 @@ function renderLogin() {
       ${input("login-password", "Password", "password", "Enter your password", "current-password")}
       <div class="login-error" id="login-error" role="alert">${escapeHtml(authFlow.error)}</div>
       <button class="primary-btn login-submit" type="submit">Sign in to your mill <span aria-hidden="true">→</span></button>
-      <div class="auth-links"><button type="button" class="text-action" data-auth-mode="reset">Forgot password?</button><button type="button" class="text-action" data-auth-mode="invite">Activate invited account</button></div>
+      <div class="auth-note">For password help, contact your administrator.</div>
       ${authFlow.initialized ? "" : `<div class="auth-note"><strong>First time here?</strong><br>Set up the master administrator account to get started.<button type="button" class="text-action" data-auth-mode="bootstrap">Set up administrator</button></div>`}
     </form>`;
   } else if (authFlow.mode === "bootstrap") {
     form = `<form class="login-card" id="bootstrap-form">
-      <div class="auth-note"><strong>Master account</strong><br>sachinn.agarrwal@gmail.com</div>
-      ${authFlow.stage === "request"
-        ? `<p class="login-intro">A one-time code will be sent to the master Gmail account. You must be able to access that inbox.</p>`
-        : `${input("auth-code", "Gmail verification code", "text", "6-digit code", "one-time-code")}${input("auth-password", "Permanent password", "password", "At least 12 characters", "new-password")}${input("auth-confirm-password", "Confirm password", "password", "Re-enter your password", "new-password")}`}
+      <div class="auth-note"><strong>Master user ID</strong><br>sachinn.agarrwal@gmail.com<br><br>Enter the initial password configured on the server. It will be required to sign in and must be changed in your profile.</div>
+      ${input("bootstrap-initial-password", "Initial administrator password", "password", "Enter the configured initial password", "current-password")}
       <div class="login-error" id="login-error" role="alert">${escapeHtml(authFlow.error)}</div>
-      <button class="primary-btn login-submit" type="submit">${authFlow.stage === "request" ? "Send Gmail verification code" : "Create administrator account"}</button>
+      <button class="primary-btn login-submit" type="submit">Create administrator account</button>
       <div class="auth-links"><button type="button" class="text-action" data-auth-mode="login">Back to sign in</button></div>
-    </form>`;
-  } else if (authFlow.mode === "invite") {
-    form = `<form class="login-card" id="invite-form">
-      ${input("auth-email", "Work email", "email", "The email used for your invitation", "email", authFlow.email)}
-      ${input("auth-code", "Invitation code", "text", "6-digit code", "one-time-code")}
-      ${input("auth-password", "Permanent password", "password", "At least 12 characters", "new-password")}
-      ${input("auth-confirm-password", "Confirm password", "password", "Re-enter your password", "new-password")}
-      <div class="login-error" id="login-error" role="alert">${escapeHtml(authFlow.error)}</div>
-      <button class="primary-btn login-submit" type="submit">Verify email and activate</button>
-      <div class="auth-links"><button type="button" class="text-action" data-auth-mode="login">Back to sign in</button><button type="button" class="text-action" data-auth-mode="reset">Reset password</button></div>
-    </form>`;
-  } else {
-    form = `<form class="login-card" id="reset-form">
-      ${input("auth-email", "Account email", "email", "Enter the email on your account", "email", authFlow.email)}
-      ${authFlow.stage === "complete"
-        ? `${input("auth-code", "Email verification code", "text", "6-digit code", "one-time-code")}${input("auth-password", "New permanent password", "password", "At least 12 characters", "new-password")}${input("auth-confirm-password", "Confirm password", "password", "Re-enter your password", "new-password")}`
-        : ""}
-      <div class="login-error" id="login-error" role="alert">${escapeHtml(authFlow.error)}</div>
-      <button class="primary-btn login-submit" type="submit">${authFlow.stage === "request" ? "Send reset code" : "Save new password"}</button>
-      <div class="auth-links"><button type="button" class="text-action" data-auth-mode="login">Back to sign in</button><button type="button" class="text-action" data-auth-mode="invite">Activate invited account</button></div>
     </form>`;
   }
 
@@ -561,8 +538,6 @@ function renderLogin() {
   document.querySelectorAll("[data-auth-mode]").forEach(button => button.addEventListener("click", () => {
     authFlow = {
       mode: button.dataset.authMode,
-      stage: "request",
-      email: button.dataset.authMode === "bootstrap" ? "sachinn.agarrwal@gmail.com" : "",
       error: "",
       initialized: authFlow.initialized
     };
@@ -573,15 +548,13 @@ function renderLogin() {
     authFlow.error = error.message || "The request could not be completed.";
     renderLogin();
   };
-  const readPassword = () => {
-    const password = document.getElementById("auth-password").value;
-    if (password !== document.getElementById("auth-confirm-password").value) {
-      throw new Error("The passwords do not match.");
-    }
-    return password;
-  };
   const enterApplication = async user => {
     currentUser = user;
+    if (user.mustChangePassword) {
+      currentModule = "profile";
+      renderApp();
+      return;
+    }
     try {
       await window.syncBackendStorage();
       currentModule = "dashboard";
@@ -612,62 +585,11 @@ function renderLogin() {
   document.getElementById("bootstrap-form")?.addEventListener("submit", async event => {
     event.preventDefault();
     try {
-      if (authFlow.stage === "request") {
-        const result = await apiRequest("/api/auth/bootstrap/request-otp", { method: "POST", body: {} });
-        authFlow.stage = "complete";
-        authFlow.error = result.message;
-        renderLogin();
-        return;
-      }
-      const password = readPassword();
-      const { user } = await apiRequest("/api/auth/bootstrap/complete", {
+      const { user } = await apiRequest("/api/auth/bootstrap", {
         method: "POST",
-        body: { code: document.getElementById("auth-code").value.trim(), password }
+        body: { initialPassword: document.getElementById("bootstrap-initial-password").value }
       });
       await enterApplication(user);
-    } catch (error) {
-      showError(error);
-    }
-  });
-
-  document.getElementById("invite-form")?.addEventListener("submit", async event => {
-    event.preventDefault();
-    try {
-      const password = readPassword();
-      await apiRequest("/api/auth/invite/complete", {
-        method: "POST",
-        body: {
-          email: document.getElementById("auth-email").value.trim(),
-          code: document.getElementById("auth-code").value.trim(),
-          password
-        }
-      });
-      authFlow = { ...authFlow, mode: "login", stage: "request", error: "Account activated. Sign in with your assigned user ID and new password." };
-      renderLogin();
-    } catch (error) {
-      showError(error);
-    }
-  });
-
-  document.getElementById("reset-form")?.addEventListener("submit", async event => {
-    event.preventDefault();
-    const email = document.getElementById("auth-email").value.trim();
-    try {
-      if (authFlow.stage === "request") {
-        const result = await apiRequest("/api/auth/password/request-otp", { method: "POST", body: { email } });
-        authFlow.stage = "complete";
-        authFlow.email = email;
-        authFlow.error = result.message;
-        renderLogin();
-        return;
-      }
-      const password = readPassword();
-      const result = await apiRequest("/api/auth/password/complete", {
-        method: "POST",
-        body: { email, code: document.getElementById("auth-code").value.trim(), password }
-      });
-      authFlow = { ...authFlow, mode: "login", stage: "request", error: result.message };
-      renderLogin();
     } catch (error) {
       showError(error);
     }
@@ -688,7 +610,7 @@ function renderSidebar() {
     <div class="brand"><div class="brand-mark">❋</div><div><div class="brand-name">RiceMill ERP Solutions</div><div class="brand-caption">Integrated mill operations</div></div></div>
     <div class="workspace-switch"><span class="workspace-switch-icon">R</span><span><strong>RiceMill ERP Solutions</strong><small>${escapeHtml(currentUser.role)} workspace</small></span><span class="workspace-chevron">⌄</span></div>
     <nav class="nav-list" aria-label="Main navigation">${groups.map(group => `<div class="nav-group"><div class="nav-caption">${group.label}</div>${group.modules.map(id => `<button class="nav-item ${currentModule === id ? "active" : ""}" data-module="${id}"><span class="nav-icon">${moduleInfo[id].icon}</span>${moduleInfo[id].label}${id === "stores" || id === "inventory" ? (() => { const items = getItemsForModule(id).map(entry => entry.item); const alerts = items.filter(item => inventoryStatus(item) !== "In stock").length; return alerts ? `<span class="nav-indicator" title="Stock needs attention">${alerts}</span>` : ""; })() : ""}</button>`).join("")}</div>`).join("")}</nav>
-    <div class="sidebar-bottom"><div class="sidebar-status"><span class="live-dot"></span><span><strong>System status</strong><small>Workspace is ready</small></span></div><div class="profile"><div class="avatar">${escapeHtml(currentUser.name.split(" ").map(part => part[0]).slice(0, 2).join(""))}</div><div class="profile-details"><div class="profile-name">${escapeHtml(currentUser.name)}</div><div class="profile-role">${escapeHtml(currentUser.role)}</div></div></div><button class="logout-btn" id="logout">↪ &nbsp; Sign out</button></div>
+    <div class="sidebar-bottom"><div class="sidebar-status"><span class="live-dot"></span><span><strong>System status</strong><small>Workspace is ready</small></span></div><div class="profile"><div class="avatar">${escapeHtml(currentUser.name.split(" ").map(part => part[0]).slice(0, 2).join(""))}</div><div class="profile-details"><div class="profile-name">${escapeHtml(currentUser.name)}</div><div class="profile-role">${escapeHtml(currentUser.role)}</div></div></div><button class="profile-action ${currentModule === "profile" ? "active" : ""}" data-module="profile">View profile & change password</button><button class="logout-btn" id="logout">↪ &nbsp; Sign out</button></div>
   </aside>`;
 }
 
@@ -1260,7 +1182,7 @@ function openAdminEditModal(moduleId, rawIndex, record) {
     auditEntries.unshift({
       timestamp: new Date().toISOString(),
       administrator: currentUser.name,
-      email: currentUser.email,
+      userId: currentUser.accountId,
       department: departments[currentUser.departmentId].label,
       moduleId,
       section: info.label,
@@ -1285,7 +1207,7 @@ function renderEditLogPage() {
   const rows = entries.map(entry => [
     new Date(entry.timestamp).toLocaleString("en-IN"),
     entry.administrator || "",
-    entry.email || "",
+    entry.userId || "",
     entry.department || "",
     entry.section || moduleInfo[entry.moduleId]?.label || entry.moduleId || "",
     entry.recordId || "",
@@ -1293,7 +1215,7 @@ function renderEditLogPage() {
   ]);
   return `<div class="page-heading"><div><div class="eyebrow module-eyebrow">ADMINISTRATION · AUDIT HISTORY</div><h1>Edited log</h1><p>Every administrator edit is recorded with the editor, timestamp, record, and field-level before-and-after values.</p></div><div class="heading-actions"><span class="date-pill">${entries.length} edits recorded</span></div></div>
     <section class="panel admin-edit-log"><div class="module-table-heading"><div><h2>Administrator edit history</h2><p>Entries are shown newest first and retained in this browser.</p></div></div>
-      ${entries.length ? `<div class="data-wrap"><table class="module-table"><thead><tr>${moduleInfo.editLog.columns.map(column => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead><tbody>${entries.map(entry => `<tr><td>${escapeHtml(new Date(entry.timestamp).toLocaleString("en-IN"))}</td><td>${escapeHtml(entry.administrator || "")}</td><td>${escapeHtml(entry.email || "")}</td><td>${escapeHtml(entry.department || "")}</td><td>${escapeHtml(entry.section || moduleInfo[entry.moduleId]?.label || entry.moduleId || "")}</td><td><strong>${escapeHtml(entry.recordId || "")}</strong></td><td><details><summary>${(entry.changes || []).length} field changes</summary><ul class="edit-log-changes">${(entry.changes || []).map(change => `<li><strong>${escapeHtml(change.field)}:</strong> <span>${escapeHtml(change.before || "—")}</span> → <span>${escapeHtml(change.after || "—")}</span></li>`).join("")}</ul></details></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state">No administrator edits have been recorded yet.</div>`}
+      ${entries.length ? `<div class="data-wrap"><table class="module-table"><thead><tr>${moduleInfo.editLog.columns.map(column => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead><tbody>${entries.map(entry => `<tr><td>${escapeHtml(new Date(entry.timestamp).toLocaleString("en-IN"))}</td><td>${escapeHtml(entry.administrator || "")}</td><td>${escapeHtml(entry.userId || "")}</td><td>${escapeHtml(entry.department || "")}</td><td>${escapeHtml(entry.section || moduleInfo[entry.moduleId]?.label || entry.moduleId || "")}</td><td><strong>${escapeHtml(entry.recordId || "")}</strong></td><td><details><summary>${(entry.changes || []).length} field changes</summary><ul class="edit-log-changes">${(entry.changes || []).map(change => `<li><strong>${escapeHtml(change.field)}:</strong> <span>${escapeHtml(change.before || "—")}</span> → <span>${escapeHtml(change.after || "—")}</span></li>`).join("")}</ul></details></td></tr>`).join("")}</tbody></table></div>` : `<div class="empty-state">No administrator edits have been recorded yet.</div>`}
     </section>`;
 }
 
@@ -1333,6 +1255,7 @@ function getRecordReportSources(moduleId, record, availableSources = null) {
 }
 
 function renderModule(moduleId) {
+  if (moduleId === "profile") return renderProfilePage();
   if (moduleId === "userManagement") return renderUserManagementPage();
   if (moduleId === "dailyReview") return renderDailyReviewPage();
   if (moduleId === "editLog") return renderEditLogPage();
@@ -1365,15 +1288,15 @@ function renderUserManagementPage() {
     .filter(([id]) => id !== "admin")
     .map(([id, department]) => `<option value="${id}">${escapeHtml(department.label)}</option>`)
     .join("");
-  return `<div class="page-heading"><div><div class="eyebrow module-eyebrow">ADMINISTRATION</div><h1>User management</h1><p>Create verified user accounts and control access to department workspaces.</p></div></div>
+  return `<div class="page-heading"><div><div class="eyebrow module-eyebrow">ADMINISTRATION</div><h1>User management</h1><p>Create user IDs and temporary passwords, and control department access.</p></div></div>
     <section class="panel user-management-panel">
-      <div class="module-table-heading"><div><h2>Invite a department user</h2><p>An OTP will be emailed to the user to verify their address and set a permanent password.</p></div></div>
+      <div class="module-table-heading"><div><h2>Create a department account</h2><p>Share the temporary password securely. The user must change it after signing in.</p></div></div>
       <form class="user-invite-form" id="user-invite-form">
         <div class="field"><label for="invite-user-id">User ID</label><input id="invite-user-id" name="userId" required minlength="3" maxlength="48" pattern="[A-Za-z0-9._-]+" autocomplete="off"></div>
         <div class="field"><label for="invite-name">Full name</label><input id="invite-name" name="name" required maxlength="100" autocomplete="name"></div>
-        <div class="field"><label for="invite-email">Work email</label><input id="invite-email" name="email" type="email" required maxlength="254" autocomplete="email"></div>
         <div class="field"><label for="invite-department">Department</label><select id="invite-department" name="departmentId" required>${departmentOptions}</select></div>
-        <div class="user-invite-actions"><div class="form-error" id="user-management-error" role="alert"></div><button class="primary-btn" type="submit">Send invitation</button></div>
+        <div class="field"><label for="invite-temporary-password">Temporary password (minimum 12 characters)</label><input id="invite-temporary-password" name="temporaryPassword" type="password" required minlength="12" maxlength="128" autocomplete="new-password"></div>
+        <div class="user-invite-actions"><div class="form-error" id="user-management-error" role="alert"></div><button class="primary-btn" type="submit">Create account</button></div>
       </form>
     </section>
     <section class="panel user-list-panel">
@@ -1382,19 +1305,122 @@ function renderUserManagementPage() {
     </section>`;
 }
 
+function renderProfilePage() {
+  return `<div class="page-heading"><div><div class="eyebrow module-eyebrow">ACCOUNT</div><h1>Profile</h1><p>Manage your account details and sign-in password.</p></div></div>
+    ${currentUser.mustChangePassword
+      ? `<div class="auth-note profile-required-note"><strong>Password update required</strong><br>Change your temporary password before continuing to the dashboard.</div>`
+      : ""}
+    <section class="panel profile-panel">
+      <div class="module-table-heading"><div><h2>Account details</h2><p>Your assigned user ID and department role.</p></div></div>
+      <dl class="profile-info"><div><dt>Name</dt><dd>${escapeHtml(currentUser.name)}</dd></div><div><dt>User ID</dt><dd>${escapeHtml(currentUser.accountId)}</dd></div><div><dt>Role</dt><dd>${escapeHtml(currentUser.role)}</dd></div></dl>
+    </section>
+    <section class="panel profile-panel">
+      <div class="module-table-heading"><div><h2>Change password</h2><p>Choose a password with at least 12 characters.</p></div></div>
+      <form class="profile-password-form" id="profile-password-form">
+        <div class="field"><label for="profile-current-password">Current password</label><input id="profile-current-password" type="password" autocomplete="current-password" required></div>
+        <div class="field"><label for="profile-new-password">New password</label><input id="profile-new-password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></div>
+        <div class="field"><label for="profile-confirm-password">Confirm new password</label><input id="profile-confirm-password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></div>
+        <div class="profile-password-actions"><div class="form-error" id="profile-password-error" role="alert"></div><button class="primary-btn" type="submit">Update password</button></div>
+      </form>
+    </section>`;
+}
+
+function wireProfileActions() {
+  document.getElementById("profile-password-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const errorElement = document.getElementById("profile-password-error");
+    const submitButton = form.querySelector('button[type="submit"]');
+    const currentPassword = document.getElementById("profile-current-password").value;
+    const newPassword = document.getElementById("profile-new-password").value;
+    if (newPassword !== document.getElementById("profile-confirm-password").value) {
+      errorElement.textContent = "The new passwords do not match.";
+      return;
+    }
+
+    submitButton.disabled = true;
+    errorElement.textContent = "";
+    try {
+      const { user } = await apiRequest("/api/auth/password/change", {
+        method: "POST",
+        body: { currentPassword, newPassword }
+      });
+      currentUser = user;
+      if (user.mustChangePassword) {
+        throw new Error("The initial password still needs to be changed.");
+      }
+      showToast("Password updated successfully.");
+      try {
+        await window.syncBackendStorage();
+      } catch (error) {
+        console.error("Could not load dashboard data after the password change.", error);
+      }
+      currentModule = "dashboard";
+      renderApp();
+    } catch (error) {
+      errorElement.textContent = error.message || "Could not update the password.";
+    } finally {
+      submitButton.disabled = false;
+    }
+  });
+}
+
 function renderAdminUsers(users) {
-  if (!users.length) return `<div class="empty-state">No department accounts yet. Send the first invitation above.</div>`;
-  return `<table><thead><tr><th>User ID</th><th>Name</th><th>Email</th><th>Department</th><th>Status</th><th>Account controls</th></tr></thead><tbody>${users.map(user => {
-    const status = user.isActive ? "Active" : user.emailVerified ? "Deactivated" : "Invitation pending";
-    return `<tr><td>${escapeHtml(user.userId)}</td><td>${escapeHtml(user.name)}</td><td>${escapeHtml(user.email)}</td><td>${escapeHtml(user.role)}</td><td>${status}</td><td class="user-actions">
+  if (!users.length) return `<div class="empty-state">No department accounts yet. Create the first account above.</div>`;
+  return `<table><thead><tr><th>User ID</th><th>Name</th><th>Department</th><th>Status</th><th>Account controls</th></tr></thead><tbody>${users.map(user => {
+    const status = !user.isActive ? "Deactivated" : user.mustChangePassword ? "Password change required" : "Active";
+    return `<tr><td>${escapeHtml(user.userId)}</td><td>${escapeHtml(user.name)}</td><td>${escapeHtml(user.role)}</td><td>${status}</td><td class="user-actions">
       ${user.isActive
         ? `<button class="text-action" type="button" data-user-action="reset" data-user-id="${escapeHtml(user.userId)}">Reset password</button><button class="text-action" type="button" data-user-action="toggle" data-active="false" data-user-id="${escapeHtml(user.userId)}">Deactivate</button>`
-        : user.emailVerified
-          ? `<button class="text-action" type="button" data-user-action="toggle" data-active="true" data-user-id="${escapeHtml(user.userId)}">Reactivate</button>`
-          : `<button class="text-action" type="button" data-user-action="invite" data-user-id="${escapeHtml(user.userId)}">Resend invitation</button>`}
+        : `<button class="text-action" type="button" data-user-action="reset" data-user-id="${escapeHtml(user.userId)}">Set password &amp; reactivate</button>`}
       <button class="text-action danger-action" type="button" data-user-action="delete" data-user-id="${escapeHtml(user.userId)}">Delete</button>
     </td></tr>`;
   }).join("")}</tbody></table>`;
+}
+
+function openAdminPasswordReset(userId, onSaved) {
+  const modal = document.createElement("div");
+  modal.className = "modal-backdrop";
+  modal.innerHTML = `<form class="modal" id="admin-reset-password-form">
+    <div class="modal-header"><h2>Set temporary password</h2><button type="button" class="close-btn" aria-label="Close">×</button></div>
+    <p class="purchase-form-note">For ${escapeHtml(userId)}. Share the password securely; the user must change it at next sign-in.</p>
+    <div class="field"><label for="admin-temporary-password">Temporary password (minimum 12 characters)</label><input id="admin-temporary-password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></div>
+    <div class="field"><label for="admin-confirm-password">Confirm temporary password</label><input id="admin-confirm-password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></div>
+    <div class="form-error" id="admin-reset-error" role="alert"></div>
+    <div class="modal-actions"><button type="button" class="secondary-btn" id="cancel-admin-reset">Cancel</button><button type="submit" class="primary-btn">Save temporary password</button></div>
+  </form>`;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  modal.querySelector(".close-btn").addEventListener("click", close);
+  modal.querySelector("#cancel-admin-reset").addEventListener("click", close);
+  modal.addEventListener("click", event => {
+    if (event.target === modal) close();
+  });
+  modal.querySelector("form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const temporaryPassword = modal.querySelector("#admin-temporary-password").value;
+    const errorElement = modal.querySelector("#admin-reset-error");
+    if (temporaryPassword !== modal.querySelector("#admin-confirm-password").value) {
+      errorElement.textContent = "The temporary passwords do not match.";
+      return;
+    }
+    const submitButton = modal.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    errorElement.textContent = "";
+    try {
+      const result = await apiRequest(`/api/admin/users/${encodeURIComponent(userId)}/reset-password`, {
+        method: "POST",
+        body: { temporaryPassword }
+      });
+      close();
+      showToast(result.message);
+      onSaved();
+    } catch (error) {
+      errorElement.textContent = error.message || "Could not set the temporary password.";
+      submitButton.disabled = false;
+    }
+  });
+  modal.querySelector("#admin-temporary-password").focus();
 }
 
 function wireUserManagementActions() {
@@ -1423,7 +1449,7 @@ function wireUserManagementActions() {
       showToast(result.message);
       await loadUsers();
     } catch (error) {
-      message.textContent = error.message || "Could not send the invitation.";
+      message.textContent = error.message || "Could not create the account.";
     } finally {
       submitButton.disabled = false;
     }
@@ -1443,12 +1469,9 @@ function wireUserManagementActions() {
           method: "PATCH",
           body: { active: button.dataset.active === "true" }
         });
-      } else if (action === "invite") {
-        const result = await apiRequest(`/api/admin/users/${encodeURIComponent(userId)}/resend-invite`, { method: "POST", body: {} });
-        showToast(result.message);
       } else if (action === "reset") {
-        const result = await apiRequest(`/api/admin/users/${encodeURIComponent(userId)}/reset-otp`, { method: "POST", body: {} });
-        showToast(result.message);
+        openAdminPasswordReset(userId, loadUsers);
+        return;
       }
       await loadUsers();
     } catch (error) {
@@ -1470,14 +1493,16 @@ function renderApp() {
       window.clearBackendStorageCache();
       currentUser = null;
       currentModule = "dashboard";
-      authFlow = { mode: "login", stage: "request", email: "", error: "", initialized: true };
+      authFlow = { mode: "login", error: "", initialized: true };
       renderLogin();
     } catch (error) {
       showToast(error.message || "Sign out failed.");
     }
   });
   document.getElementById("mobile-menu").addEventListener("click", () => document.getElementById("sidebar").classList.toggle("open"));
-  if (currentModule === "userManagement") {
+  if (currentModule === "profile") {
+    wireProfileActions();
+  } else if (currentModule === "userManagement") {
     wireUserManagementActions();
   } else if (currentModule === "dashboard") {
     const getDashboardSources = () => getOperationalModules()
@@ -2608,6 +2633,11 @@ async function startApplication() {
     authFlow.initialized = session.initialized;
     if (session.user) {
       currentUser = session.user;
+      if (currentUser.mustChangePassword) {
+        currentModule = "profile";
+        renderApp();
+        return;
+      }
       await window.syncBackendStorage();
       renderApp();
       return;

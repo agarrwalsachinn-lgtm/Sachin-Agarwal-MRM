@@ -15,7 +15,5 @@ services:
         value: production
       - key: DATABASE_PATH
         value: /var/data/data.sqlite
-      - key: GMAIL_USER
-        value: sachinn.agarrwal@gmail.com
-      - key: GMAIL_APP_PASSWORD
+      - key: ADMIN_INITIAL_PASSWORD
         sync: false
